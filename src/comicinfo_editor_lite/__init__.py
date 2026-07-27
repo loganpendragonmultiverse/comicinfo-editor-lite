@@ -1,0 +1,3 @@
+"""ComicInfo.xml Editor Lite."""
+
+__version__ = "1.0.0"
