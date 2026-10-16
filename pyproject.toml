@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comicinfo-editor-lite"
-version = "1.1.0"
+version = "1.2.0"
 description = "Plan, batch, and safely write focused ComicInfo.xml changes into validated CBZ copies."
 readme = "README.md"
 requires-python = ">=3.10"
