@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-10-16
+
+- Added optional archive SHA-256 and exact old-field-value preconditions for single and batch editing.
+- Added synthetic regression fixtures for failure isolation and output preservation.
+
+
 ## 1.1.0 - 2026-08-03
 
 - Added dry-run before/after metadata plans with explicit set, remove, and unchanged actions.

@@ -27,3 +27,14 @@ Every write validates archive paths, duplicate members, entry and uncompressed-s
 Only ZIP-based CBZ archives are supported. The tool does not edit CBR or CB7, fetch metadata, modify images, normalize the full ComicInfo schema, infer issue numbers from filenames, overwrite sources or outputs, or make a multi-archive batch globally atomic. Keep backups of valuable archives. Python 3.10 or newer is required.
 
 Part of the [Logan Pendragon Forge open-source collection](https://www.loganpendragonforge.com/open-source/). Licensed under the [MIT License](LICENSE).
+
+## 1.2.0: Edit preconditions
+
+Optional preconditions prevent applying a patch to an unexpected source. `--expected-sha256` accepts a full archive SHA-256; `--expected-fields examples/expected-fields.json` reads an object of supported field names and exact old XML text values. A null expected value requires an absent field; an empty string requires a present empty field. Numeric XML values are compared as strings. Checks run for both planning and writes before creating output directories or archives. JSON batch jobs accept `expected_sha256` and `expected_fields`; CSV supports the same columns, with JSON text in expected_fields. Each failed job remains isolated. Single-archive flags are refused in batch/directory modes to avoid silently ignoring them. Keep source files stable during editing; the source hash is checked again before output placement. Unknown XML elements and page bytes remain preserved.
+
+```bash
+comicinfo-edit issue.cbz examples/metadata.json --dry-run --expected-fields examples/expected-fields.json
+```
+
+The supplied `examples/expected-fields.json` requires an absent Title. Replace its
+values with the old values you intend to check before using it with your archive.
