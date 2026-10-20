@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import lzma
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -76,7 +79,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("provide an archive and patch, --batch, or directory mode")
         sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     except (
+        csv.Error,
         OSError,
+        RuntimeError,
+        NotImplementedError,
+        EOFError,
+        zlib.error,
+        lzma.LZMAError,
         TypeError,
         ValueError,
         json.JSONDecodeError,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-10-20
+
+- Refuse ambiguous patched XML fields and validate direct API patches.
+- Validate batch structures and CSV row widths; isolate unsupported archive errors.
+- Stream archive fingerprints and unchanged page copies.
+- Publish validated outputs exclusively from unique owned temporary files.
+- Install all four authority documents and examples in both release packages.
+
 ## 1.2.0 - 2026-10-16
 
 - Added optional archive SHA-256 and exact old-field-value preconditions for single and batch editing.
