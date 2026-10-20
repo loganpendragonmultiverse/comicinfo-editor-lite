@@ -14,3 +14,29 @@ comicinfo-edit issue.cbz examples/metadata.json --dry-run --expected-fields exam
 
 The supplied `examples/expected-fields.json` requires an absent Title. Replace its
 values with the old values you intend to check before using it with your archive.
+
+## 1.2.1 preservation contract
+
+Patched XML fields must be unambiguous: duplicate occurrences are refused in plans
+and writes, including removals. Direct Python entry points validate patches too.
+CSV manifests require unique supported headers and rows of matching width; JSON
+jobs must be objects. Invalid individual jobs and unsupported/encrypted/corrupt
+archives are reported separately so later independent jobs can finish.
+
+Archive fingerprints and page copies are streamed. XML metadata loads in
+memory with a separate 16 MiB limit; the declared expanded-archive budget remains 2 GiB. Keep sources
+stable; preconditions are checked before creating output directories and the
+source hash is checked again before publication.
+
+Outputs use owned unique temporary files and exclusive hard-link publication.
+Existing files and symbolic links, including dangling links, are refused; an
+output created while the archive is being edited is preserved. The destination
+filesystem must support hard links; otherwise the write fails without replacing
+the destination. This handles accidental collisions, not a hostile concurrent
+filesystem. Temporary files owned by a failed job are removed; unrelated files
+are preserved.
+
+Both packages install the four authority documents and examples beneath
+share/doc/comicinfo-editor-lite in the installation prefix.
+
+CSV quoting is strict; malformed quoting and oversized fields produce actionable CLI errors. Valid quoted commas and multiline field text remain supported.

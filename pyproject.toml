@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comicinfo-editor-lite"
-version = "1.2.0"
+version = "1.2.1"
 description = "Plan, batch, and safely write focused ComicInfo.xml changes into validated CBZ copies."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,3 +35,7 @@ omit = ["src/*/__main__.py"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=comicinfo_editor_lite --cov-branch --cov-report=term-missing --cov-fail-under=90"
+
+[tool.setuptools.data-files]
+"share/doc/comicinfo-editor-lite" = ["README.md", "DEVELOPMENT.md", "TESTING.md", "CHANGELOG.md"]
+"share/doc/comicinfo-editor-lite/examples" = ["examples/metadata.json", "examples/batch.csv", "examples/expected-fields.json"]

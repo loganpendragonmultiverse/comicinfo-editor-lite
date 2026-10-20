@@ -120,7 +120,7 @@ def test_dry_run_diff_and_transaction_evidence(tmp_path: Path) -> None:
     output = tmp_path / "output.cbz"
     result = edit_archive(source, output, {"Series": "New"})
     assert result["rollback_required"] is False
-    assert "atomic replacement" in result["transaction"]
+    assert "exclusive hard-link placement" in result["transaction"]
 
 
 def test_json_and_csv_batch_manifests_with_template(tmp_path: Path) -> None:

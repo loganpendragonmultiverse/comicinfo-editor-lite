@@ -3,10 +3,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import lzma
 import os
+import re
+import tempfile
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import IO, Any, cast
 from xml.etree import ElementTree
 
 FIELDS = {
@@ -24,8 +28,27 @@ FIELDS = {
     "LanguageISO",
 }
 INTEGER_FIELDS = {"Volume", "Year", "Month", "PageCount"}
+MAX_XML_BYTES = 16 * 1024 * 1024
 MAX_ENTRIES = 10_000
 MAX_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
+
+
+def _hash_handle(handle: IO[bytes]) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return _hash_handle(handle)
+
+
+def _unique_fields(root: ElementTree.Element, fields: set[str]) -> None:
+    for field in fields:
+        if len(root.findall(field)) > 1:
+            raise ValueError(f"ambiguous duplicate metadata field: {field}")
 
 
 def load_patch(path: Path) -> dict[str, str | int | None]:
@@ -41,7 +64,12 @@ def _validate_infos(infos: list[zipfile.ZipInfo]) -> None:
     seen: set[str] = set()
     for info in infos:
         path = PurePosixPath(info.filename.replace("\\", "/"))
-        if path.is_absolute() or ".." in path.parts or not path.parts:
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not path.parts
+            or re.match(r"^[A-Za-z]:", path.parts[0])
+        ):
             raise ValueError(f"unsafe archive member path: {info.filename}")
         key = path.as_posix().casefold()
         if key in seen:
@@ -56,6 +84,7 @@ def _xml(existing: bytes | None, patch: dict[str, str | int | None]) -> bytes:
         root = ElementTree.fromstring(existing)
         if root.tag != "ComicInfo":
             raise ValueError("ComicInfo.xml root must be ComicInfo")
+    _unique_fields(root, set(patch))
     for field, value in patch.items():
         element = root.find(field)
         if value is None:
@@ -79,6 +108,8 @@ def _metadata(source: Path) -> tuple[dict[str, str], list[zipfile.ZipInfo], byte
         ]
         if len(metadata_infos) > 1:
             raise ValueError("archive contains multiple ComicInfo.xml files")
+        if metadata_infos and metadata_infos[0].file_size > MAX_XML_BYTES:
+            raise ValueError("ComicInfo.xml exceeds the 16 MiB metadata limit")
         existing = archive.read(metadata_infos[0]) if metadata_infos else None
     if existing is None:
         return {}, infos, None
@@ -95,10 +126,11 @@ def plan_archive(
     expected_sha256: str | None = None,
     expected_fields: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
+    patch = load_patch_data(patch)
     source = source.resolve()
     if not source.is_file() or source.suffix.casefold() not in {".cbz", ".zip"}:
         raise ValueError("source must be a CBZ or ZIP file")
-    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_hash = _digest(source)
     if expected_sha256 is not None:
         if (
             not isinstance(expected_sha256, str)
@@ -119,8 +151,10 @@ def plan_archive(
                 raise ValueError(f"ambiguous old field precondition: {field}")
             if current.get(field) != expected:
                 raise ValueError(f"old field precondition mismatch: {field}")
-    if hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
+    if _digest(source) != source_hash:
         raise ValueError("source changed while checking preconditions")
+    if _existing is not None:
+        _unique_fields(ElementTree.fromstring(_existing), set(patch))
     changes: list[dict[str, Any]] = []
     for field, value in sorted(patch.items()):
         before = current.get(field)
@@ -148,7 +182,21 @@ def plan_archive(
 def load_batch(path: Path) -> list[dict[str, Any]]:
     if path.suffix.casefold() == ".csv":
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            rows = list(csv.DictReader(handle))
+            reader = csv.DictReader(handle, strict=True)
+            headers = reader.fieldnames
+            allowed = FIELDS | {"source", "output", "expected_sha256", "expected_fields"}
+            if (
+                not headers
+                or len(set(headers)) != len(headers)
+                or not {"source", "output"} <= set(headers)
+                or any(header not in allowed for header in headers)
+            ):
+                raise ValueError(
+                    "CSV requires unique supported headers including source and output"
+                )
+            rows = list(reader)
+            if any(None in row or any(value is None for value in row.values()) for row in rows):
+                raise ValueError("CSV row width does not match its header")
         jobs: list[dict[str, Any]] = []
         for row in rows:
             if not row.get("source") or not row.get("output"):
@@ -175,6 +223,8 @@ def load_batch(path: Path) -> list[dict[str, Any]]:
     raw_jobs = data.get("jobs") if isinstance(data, dict) else None
     if not isinstance(raw_jobs, list) or not raw_jobs:
         raise ValueError("batch JSON must contain a non-empty jobs array")
+    if any(not isinstance(item, dict) for item in raw_jobs):
+        raise ValueError("each batch job must be an object")
     return [dict(item) for item in raw_jobs]
 
 
@@ -209,21 +259,26 @@ def edit_archive(
     expected_fields: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
-    output = output.resolve()
-    if source == output:
+    patch = load_patch_data(patch)
+    output = output.absolute()
+    if source == output.resolve():
         raise ValueError("output must differ from source")
-    if output.exists():
+    if output.exists() or output.is_symlink():
         raise ValueError("output already exists")
     if not source.is_file() or source.suffix.casefold() not in {".cbz", ".zip"}:
         raise ValueError("source must be a CBZ or ZIP file")
     temporary = output.with_name(f".{output.name}.tmp")
-    if temporary.exists():
+    if temporary.exists() or temporary.is_symlink():
         raise ValueError("temporary output already exists")
     original_hashes: dict[str, str] = {}
     plan = plan_archive(
         source, patch, expected_sha256=expected_sha256, expected_fields=expected_fields
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent, delete=False
+    ) as handle:
+        temporary = Path(handle.name)
     try:
         with zipfile.ZipFile(source, "r") as archive:
             infos = archive.infolist()
@@ -235,15 +290,20 @@ def edit_archive(
             ]
             if len(metadata_infos) > 1:
                 raise ValueError("archive contains multiple ComicInfo.xml files")
+            if metadata_infos and metadata_infos[0].file_size > MAX_XML_BYTES:
+                raise ValueError("ComicInfo.xml exceeds the 16 MiB metadata limit")
             existing = archive.read(metadata_infos[0]) if metadata_infos else None
             updated_xml = _xml(existing, patch)
             with zipfile.ZipFile(temporary, "w") as target:
                 for info in infos:
                     if metadata_infos and info.filename == metadata_infos[0].filename:
                         continue
-                    content = archive.read(info)
-                    original_hashes[info.filename] = hashlib.sha256(content).hexdigest()
-                    target.writestr(info, content)
+                    digest = hashlib.sha256()
+                    with archive.open(info) as reader, target.open(info, "w") as writer:
+                        for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                            writer.write(chunk)
+                    original_hashes[info.filename] = digest.hexdigest()
                 target.writestr("ComicInfo.xml", updated_xml, compress_type=zipfile.ZIP_DEFLATED)
         with zipfile.ZipFile(temporary, "r") as completed:
             _validate_infos(completed.infolist())
@@ -251,11 +311,13 @@ def edit_archive(
                 raise ValueError("completed archive failed CRC validation")
             ElementTree.fromstring(completed.read("ComicInfo.xml"))
             for name, expected in original_hashes.items():
-                if hashlib.sha256(completed.read(name)).hexdigest() != expected:
-                    raise ValueError(f"member changed unexpectedly: {name}")
-        if hashlib.sha256(source.read_bytes()).hexdigest() != plan["source_sha256"]:
+                with completed.open(name) as member:
+                    if _hash_handle(member) != expected:
+                        raise ValueError(f"member changed unexpectedly: {name}")
+        if _digest(source) != plan["source_sha256"]:
             raise ValueError("source changed during edit")
-        os.replace(temporary, output)
+        os.link(temporary, output)
+        temporary.unlink()
     except Exception:
         if temporary.exists():
             temporary.unlink()
@@ -267,8 +329,8 @@ def edit_archive(
         "updated_fields": sorted(patch),
         "changes": plan["changes"],
         "preserved_members": len(original_hashes),
-        "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-        "transaction": "temporary output validated before atomic replacement",
+        "output_sha256": _digest(output),
+        "transaction": "temporary output validated before exclusive hard-link placement",
         "rollback_required": False,
     }
 
@@ -284,7 +346,17 @@ def run_batch(
     failures: list[dict[str, str]] = []
     for index, job in enumerate(jobs, 1):
         try:
-            source = Path(str(job["source"]))
+            if not isinstance(job, dict):
+                raise TypeError("each batch job must be an object")
+            if not isinstance(job.get("source"), str) or not job["source"].strip():
+                raise ValueError("each job requires a non-empty source path")
+            if job.get("output") is not None and (
+                not isinstance(job["output"], str) or not job["output"].strip()
+            ):
+                raise ValueError("output must be a non-empty path string")
+            if not isinstance(job.get("patch", {}), dict):
+                raise TypeError("job patch must be an object")
+            source = Path(job["source"])
             patch_raw = {**(template or {}), **dict(job.get("patch", {}))}
             patch = load_patch_data(patch_raw)
             conditions: dict[str, Any] = {
@@ -302,9 +374,24 @@ def run_batch(
                 result = edit_archive(source, Path(str(job["output"])), patch, **conditions)
             result["job"] = index
             results.append(result)
-        except (OSError, TypeError, ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            NotImplementedError,
+            EOFError,
+            zipfile.BadZipFile,
+            ElementTree.ParseError,
+            zlib.error,
+            lzma.LZMAError,
+        ) as exc:
             failures.append(
-                {"job": str(index), "source": str(job.get("source", "")), "error": str(exc)}
+                {
+                    "job": str(index),
+                    "source": str(job.get("source", "")) if isinstance(job, dict) else "",
+                    "error": str(exc),
+                }
             )
     return {
         "schema_version": 2,
